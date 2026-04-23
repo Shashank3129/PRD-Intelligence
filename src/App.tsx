@@ -113,7 +113,7 @@ export default function App() {
   // If we already have a persisted user show the app immediately; validate session in background
   const [authChecking, setAuthChecking] = useState(() => !useAppStore.getState().user);
   // Only screens that don't render their own UserMenu in a header
-  const floatingMenuScreens: Screen[] = ['setup', 'generating', 'export', 'company-setup'];
+  const floatingMenuScreens: Screen[] = ['setup', 'generating', 'export'];
 
   useEffect(() => {
     let cancelled = false;
@@ -126,6 +126,7 @@ export default function App() {
         const email = u.email || '';
         const name = (u.user_metadata?.full_name as string | undefined) || u.email || 'User';
         setUser({
+          id: u.id,
           name,
           email,
           avatarUrl: getAuthAvatarUrl(u.user_metadata as Record<string, unknown> | undefined)
@@ -140,7 +141,7 @@ export default function App() {
           const persistedCompany = useAppStore.getState().selectedCompany;
 
           if (userCompanies.length === 0) {
-            setScreen('company-setup');
+            setScreen('dashboard');
           } else {
             if (persistedCompany && userCompanies.find(c => c.id === persistedCompany.id)) {
               // keep as is
@@ -171,7 +172,7 @@ export default function App() {
         const email = u.email || '';
         const avatarUrl = getAuthAvatarUrl(u.user_metadata as Record<string, unknown> | undefined);
 
-        setUser({ name, email, avatarUrl });
+        setUser({ id: u.id, name, email, avatarUrl });
 
         if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
           try {
@@ -188,7 +189,7 @@ export default function App() {
             setCompanies(userCompanies);
 
             if (userCompanies.length === 0) {
-              setScreen('company-setup');
+              setScreen('dashboard');
               if (event === 'SIGNED_IN') {
                 addToast({ type: 'success', message: `Welcome, ${name.split(' ')[0]}!` });
               }

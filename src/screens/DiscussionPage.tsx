@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useAppStore } from '@/hooks/useAppStore';
 import { UserMenu } from '@/components/UserMenu';
 import { generatePersonaMessage, parseAIResponse } from '@/services/aiService';
+import { resolveCurrentUserId, savePRDWithTimeout, updatePRDWithTimeout } from '@/services/supabase';
 import { ArrowRight, ArrowLeft, Send, SkipForward, Check, X, FileText, Menu, ChevronLeft, User, AlertCircle, Bot, Sparkles } from 'lucide-react';
 import type { Persona } from '@/types';
 
@@ -157,20 +158,23 @@ export function DiscussionPage() {
     addMessage,
     prd,
     setPrd,
+    currentPrdId,
+    setCurrentPrdId,
+    prdVersion,
     productCtx,
     prdDeltaCount,
     incrementPrdDelta,
     setScreen,
     addToast,
-    resetDiscussionState
+    resetDiscussionState,
+    user,
+    selectedCompany
   } = useAppStore();
 
   const [activePersonaId, setActivePersonaId] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [streamingText, setStreamingText] = useState<string | null>(null);
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const loadingStartRef = useRef<number | null>(null);
   const [showPrdModal, setShowPrdModal] = useState(false);
   const [showQueue, setShowQueue] = useState(false);
   const [isLgScreen, setIsLgScreen] = useState(() =>
@@ -178,6 +182,8 @@ export function DiscussionPage() {
   );
   const [error, setError] = useState<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const requestVersionRef = useRef(0);
+  const activeRequestIdRef = useRef<number | null>(null);
   // Track how many messages existed when we opened each persona — only animate new ones
   const personaInitialMsgCount = useRef<Record<string, number>>({});
   // In-flight guard to prevent StrictMode double-invocation of openPersona
@@ -215,20 +221,37 @@ export function DiscussionPage() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [conversations, activePersonaId, streamingText]);
 
-  // Elapsed-time counter while loading
   useEffect(() => {
-    if (loading) {
-      loadingStartRef.current = Date.now();
-      setElapsedSeconds(0);
-      const id = setInterval(() => {
-        setElapsedSeconds(Math.floor((Date.now() - (loadingStartRef.current ?? Date.now())) / 1000));
-      }, 1000);
-      return () => clearInterval(id);
-    } else {
-      loadingStartRef.current = null;
-      setElapsedSeconds(0);
-    }
-  }, [loading]);
+    return () => {
+      requestVersionRef.current += 1;
+      activeRequestIdRef.current = null;
+    };
+  }, []);
+
+  const beginRequest = () => {
+    const requestId = ++requestVersionRef.current;
+    activeRequestIdRef.current = requestId;
+    setLoading(true);
+    setStreamingText('');
+    return requestId;
+  };
+
+  const isCurrentRequest = (requestId: number) => activeRequestIdRef.current === requestId;
+
+  const finishRequest = (requestId: number) => {
+    if (!isCurrentRequest(requestId)) return false;
+    activeRequestIdRef.current = null;
+    setLoading(false);
+    setStreamingText(null);
+    return true;
+  };
+
+  const cancelActiveRequest = () => {
+    requestVersionRef.current += 1;
+    activeRequestIdRef.current = null;
+    setLoading(false);
+    setStreamingText(null);
+  };
 
   // openPersona accepts an optional isCancelled getter for StrictMode safety
   const openPersona = useCallback(async (
@@ -237,6 +260,10 @@ export function DiscussionPage() {
   ) => {
     const persona = sortedPersonas.find(p => p.id === personaId);
     if (!persona || !productCtx) return;
+
+    if (activePersonaId && activePersonaId !== personaId && activeRequestIdRef.current !== null) {
+      cancelActiveRequest();
+    }
 
     setActivePersonaId(personaId);
     setShowQueue(false);
@@ -251,26 +278,24 @@ export function DiscussionPage() {
       if (openingPersonaId.current === personaId) return;
       openingPersonaId.current = personaId;
 
-      setLoading(true);
-      setStreamingText('');
+      const requestId = beginRequest();
       setPersonaStatus(personaId, 'active');
 
       try {
         const result = await generatePersonaMessage(
           persona, productCtx, prd, [], true,
           (accumulated) => {
-            if (isCancelled?.()) return;
+            if (isCancelled?.() || !isCurrentRequest(requestId)) return;
             setStreamingText(accumulated);
           }
         );
 
         // If StrictMode cancelled this invocation, bail out without side-effects
-        if (isCancelled?.()) {
+        if (isCancelled?.() || !isCurrentRequest(requestId)) {
           openingPersonaId.current = null;
           return;
         }
 
-        setStreamingText(null);
         if (result.success) {
           personaInitialMsgCount.current[personaId] = 0;
           addMessage(personaId, { role: 'assistant', content: result.text || '' });
@@ -278,21 +303,20 @@ export function DiscussionPage() {
           throw new Error(result.error || 'Failed to get opening message');
         }
       } catch (err) {
-        if (isCancelled?.()) {
+        if (isCancelled?.() || !isCurrentRequest(requestId)) {
           openingPersonaId.current = null;
           return;
         }
-        setStreamingText(null);
         const msg = err instanceof Error ? err.message : 'Failed to start conversation';
         setError(msg);
         addToast({ type: 'error', message: msg });
       }
 
       openingPersonaId.current = null;
-      setLoading(false);
+      finishRequest(requestId);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sortedPersonas, productCtx, prd, conversations]);
+  }, [sortedPersonas, productCtx, prd, conversations, activePersonaId]);
 
   const handleSend = async () => {
     if (!input.trim() || !activePersonaId || loading || !productCtx) return;
@@ -305,19 +329,20 @@ export function DiscussionPage() {
     setError(null);
 
     const currentConvo = conversations[activePersonaId] || [];
+    const conversationForModel = [...currentConvo, { role: 'user', content: userMessage }];
     personaInitialMsgCount.current[activePersonaId] = currentConvo.length + 1;
     addMessage(activePersonaId, { role: 'user', content: userMessage });
-    setLoading(true);
-    setStreamingText('');
+    const requestId = beginRequest();
 
     try {
-      const conversation = conversations[activePersonaId] || [];
       const result = await generatePersonaMessage(
-        persona, productCtx, prd, conversation, false,
-        (accumulated) => setStreamingText(accumulated)
+        persona, productCtx, prd, conversationForModel, false,
+        (accumulated) => {
+          if (isCurrentRequest(requestId)) setStreamingText(accumulated);
+        }
       );
 
-      setStreamingText(null);
+      if (!isCurrentRequest(requestId)) return;
 
       if (result.success) {
         const parsed = parseAIResponse(result.text || '');
@@ -330,6 +355,34 @@ export function DiscussionPage() {
           });
           setPrd(updatedPrd);
           incrementPrdDelta();
+
+          try {
+            if (currentPrdId) {
+              await updatePRDWithTimeout(currentPrdId, {
+                prd_content: updatedPrd,
+                product_name: productCtx.productName,
+                version: prdVersion
+              });
+            } else if (selectedCompany?.id && user?.email) {
+              const userId = await resolveCurrentUserId(user.id);
+              const savedPrd = await savePRDWithTimeout({
+                user_id: userId,
+                company_id: selectedCompany.id,
+                product_name: productCtx.productName,
+                prd_content: updatedPrd,
+                version: prdVersion
+              });
+              setCurrentPrdId(savedPrd.id ?? null);
+            }
+          } catch (saveError) {
+            console.error('[DiscussionPage] Failed to sync PRD update:', saveError);
+            addToast({
+              type: 'warning',
+              message: saveError instanceof Error
+                ? saveError.message
+                : 'Discussion updates were applied, but syncing the PRD failed.'
+            });
+          }
         }
 
         if (parsed.approved) {
@@ -346,17 +399,19 @@ export function DiscussionPage() {
         throw new Error(result.error || 'Failed to get response');
       }
     } catch (err) {
-      setStreamingText(null);
+      if (!isCurrentRequest(requestId)) return;
       const msg = err instanceof Error ? err.message : 'Failed to send message';
       setError(msg);
       addToast({ type: 'error', message: msg });
+    } finally {
+      finishRequest(requestId);
     }
-
-    setLoading(false);
   };
 
   const handleSkip = () => {
     if (!activePersonaId) return;
+    cancelActiveRequest();
+    setError(null);
     setPersonaStatus(activePersonaId, 'skipped');
     const currentIndex = sortedPersonas.findIndex(p => p.id === activePersonaId);
     const nextPending = sortedPersonas.slice(currentIndex + 1).find(p =>
@@ -438,7 +493,7 @@ export function DiscussionPage() {
 
           <div className="flex items-center gap-1.5 md:gap-3">
             <motion.button
-              onClick={() => { resetDiscussionState(); setScreen('refine'); }}
+              onClick={() => { cancelActiveRequest(); resetDiscussionState(); setScreen('refine'); }}
               className="flex items-center gap-1.5 text-xs md:text-sm text-slate-500 hover:text-slate-900 transition-colors px-2 md:px-3 py-2 rounded-xl hover:bg-slate-100"
               whileHover={{ scale: 1.02, x: -2 }} whileTap={{ scale: 0.98 }}
               title="Go back to refine your PRD and restart the review"
@@ -563,12 +618,7 @@ export function DiscussionPage() {
                   {loading && (
                     <div className="flex items-center gap-1.5 ml-2">
                       <Sparkles className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
-                      <span className="text-xs text-slate-400">
-                        Responding{elapsedSeconds > 5 ? ` (${elapsedSeconds}s…)` : '…'}
-                      </span>
-                      {elapsedSeconds >= 15 && (
-                        <span className="text-xs text-amber-500 font-medium">Slow model, please wait</span>
-                      )}
+                      <span className="text-xs text-slate-400">Reviewing…</span>
                     </div>
                   )}
                 </div>
@@ -662,9 +712,7 @@ export function DiscussionPage() {
                             />
                           ))}
                         </div>
-                        <span className="text-xs text-slate-400">
-                          {activePersona.name} is typing{elapsedSeconds > 5 ? ` (${elapsedSeconds}s)` : '…'}
-                        </span>
+                        <span className="text-xs text-slate-400">{activePersona.name} is reviewing…</span>
                       </div>
                     )}
                   </motion.div>

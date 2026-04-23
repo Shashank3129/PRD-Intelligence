@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAppStore } from '@/hooks/useAppStore';
 import { generatePRD } from '@/services/aiService';
+import { resolveCurrentUserId, savePRDWithTimeout } from '@/services/supabase';
 import { GENERATION_STEPS } from '@/constants';
 import { Check, Zap, Sparkles, FileText, Brain, Lightbulb, AlertCircle, AlertTriangle } from 'lucide-react';
 
@@ -23,7 +24,18 @@ function charsToStep(chars: number): number {
 }
 
 export function GeneratingPage() {
-  const { productCtx, idea, setPrd, setScreen, addPrdVersion, addToast, user } = useAppStore();
+  const {
+    productCtx,
+    idea,
+    setPrd,
+    setScreen,
+    addPrdVersion,
+    addToast,
+    user,
+    selectedCompany,
+    setCurrentPrdId,
+    setPrdVersion
+  } = useAppStore();
 
   const [currentStep, setCurrentStep] = useState(0);
   const [completedSteps, setCompletedSteps] = useState<number[]>([]);
@@ -63,11 +75,41 @@ export function GeneratingPage() {
 
         if (result.success && result.text) {
           setPrd(result.text);
+          setPrdVersion(1);
+          setCurrentPrdId(null);
           addPrdVersion({
             version: 1,
             date: new Date().toISOString(),
             summary: 'Initial PRD generation'
           });
+
+          let saveWarning: string | null = null;
+
+          if (selectedCompany?.id && user?.email) {
+            try {
+              const userId = await resolveCurrentUserId(user.id);
+              const savedPrd = await savePRDWithTimeout({
+                user_id: userId,
+                company_id: selectedCompany.id,
+                product_name: productCtx.productName,
+                prd_content: result.text,
+                version: 1
+              });
+
+              if (!cancelled) {
+                setCurrentPrdId(savedPrd.id ?? null);
+              }
+            } catch (saveError) {
+              console.error('[GeneratingPage] Failed to persist PRD:', saveError);
+              saveWarning = saveError instanceof Error
+                ? saveError.message
+                : 'PRD generated, but saving it to the dashboard failed.';
+              addToast({ type: 'warning', message: saveWarning });
+            }
+          } else {
+            saveWarning = 'PRD generated, but no company was selected so it was not saved to the dashboard.';
+            addToast({ type: 'warning', message: saveWarning });
+          }
 
           // Mark any 'generating' PRDs in localStorage as 'completed'
           try {
@@ -81,9 +123,10 @@ export function GeneratingPage() {
             }
           } catch { /* non-fatal */ }
 
-          if (result.error) {
-            addToast({ type: 'warning', message: result.error });
-            setAiWarning(result.error);
+          const combinedWarning = [result.error, saveWarning].filter(Boolean).join(' ');
+          if (combinedWarning) {
+            if (result.error) addToast({ type: 'warning', message: result.error });
+            setAiWarning(combinedWarning);
           }
 
           // Complete all steps
@@ -93,7 +136,7 @@ export function GeneratingPage() {
 
           setTimeout(() => {
             if (!cancelled) setScreen('refine');
-          }, result.error ? 3500 : 1500);
+          }, combinedWarning ? 3500 : 1500);
         } else {
           throw new Error(result.error || 'Failed to generate PRD');
         }

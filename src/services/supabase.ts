@@ -23,6 +23,55 @@ export const supabase = createClient(
   SUPABASE_ANON_KEY || 'missing-key'
 );
 
+type RequestOptions = {
+  signal?: AbortSignal;
+};
+
+const AUTH_LOOKUP_TIMEOUT_MS = 5000;
+const COMPANY_SAVE_TIMEOUT_MS = 15000;
+const PROFILE_SYNC_TIMEOUT_MS = 8000;
+const PRD_SAVE_TIMEOUT_MS = 10000;
+const PRD_FETCH_TIMEOUT_MS = 8000;
+
+function makeTimeoutError(message: string) {
+  const error = new Error(message);
+  error.name = 'TimeoutError';
+  return error;
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(makeTimeoutError(message)), timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
+async function withAbortableTimeout<T>(
+  run: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  message: string
+): Promise<T> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await run(controller.signal);
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw makeTimeoutError(message);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 // ---------- Auth helpers ----------
 
 export async function signInWithGoogle() {
@@ -46,6 +95,20 @@ export async function getSession() {
   const { data, error } = await supabase.auth.getSession();
   if (error) throw error;
   return data.session;
+}
+
+export async function resolveCurrentUserId(fallbackUserId?: string) {
+  if (fallbackUserId) return fallbackUserId;
+
+  const { data, error } = await withTimeout(
+    supabase.auth.getUser(),
+    AUTH_LOOKUP_TIMEOUT_MS,
+    'Checking your account took too long. Please try again.'
+  );
+
+  if (error) throw error;
+  if (!data.user?.id) throw new Error('No authenticated user found.');
+  return data.user.id;
 }
 
 // ---------- Profile helpers ----------
@@ -84,6 +147,7 @@ export async function getProfile(userId: string): Promise<Profile | null> {
 export interface SavedPRD {
   id?: string;
   user_id: string;
+  company_id?: string;
   product_name: string;
   prd_content: string;
   version: number;
@@ -91,17 +155,77 @@ export interface SavedPRD {
   updated_at?: string;
 }
 
-export async function savePRD(prd: Omit<SavedPRD, 'id' | 'created_at' | 'updated_at'> & { company_id: string }) {
-  const { data, error } = await supabase
+export async function savePRD(
+  prd: Omit<SavedPRD, 'id' | 'created_at' | 'updated_at'> & { company_id: string },
+  options: RequestOptions = {}
+) {
+  const query = supabase
     .from('prds')
     .insert({ ...prd, updated_at: new Date().toISOString() })
-    .select()
-    .single();
+    .select();
+
+  if (options.signal) {
+    query.abortSignal(options.signal);
+  }
+
+  const { data, error } = await query.single();
   if (error) {
     console.error('[Supabase] Failed to save PRD:', error.message);
     return null;
   }
   return data as SavedPRD;
+}
+
+export async function savePRDWithTimeout(
+  prd: Omit<SavedPRD, 'id' | 'created_at' | 'updated_at'> & { company_id: string },
+  timeoutMs = PRD_SAVE_TIMEOUT_MS
+) {
+  const saved = await withAbortableTimeout(
+    (signal) => savePRD(prd, { signal }),
+    timeoutMs,
+    'Saving the PRD took too long. Please try again.'
+  );
+
+  if (!saved) {
+    throw new Error('Failed to save PRD.');
+  }
+
+  return saved;
+}
+
+export async function updatePRD(
+  id: string,
+  updates: Partial<Omit<SavedPRD, 'id' | 'created_at' | 'updated_at'>>,
+  options: RequestOptions = {}
+) {
+  const query = supabase
+    .from('prds')
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .select();
+
+  if (options.signal) {
+    query.abortSignal(options.signal);
+  }
+
+  const { data, error } = await query.single();
+  if (error) {
+    console.error('[Supabase] Failed to update PRD:', error.message);
+    throw error;
+  }
+  return data as SavedPRD;
+}
+
+export async function updatePRDWithTimeout(
+  id: string,
+  updates: Partial<Omit<SavedPRD, 'id' | 'created_at' | 'updated_at'>>,
+  timeoutMs = PRD_SAVE_TIMEOUT_MS
+) {
+  return withAbortableTimeout(
+    (signal) => updatePRD(id, updates, { signal }),
+    timeoutMs,
+    'Updating the PRD took too long. Please try again.'
+  );
 }
 
 // ---------- Company helpers ----------
@@ -120,21 +244,42 @@ export interface Company {
   updated_at?: string;
 }
 
-export async function createCompany(userId: string, company: Omit<Company, 'id' | 'user_id' | 'created_at' | 'updated_at'>) {
-  const { data, error } = await supabase
+export async function createCompany(
+  userId: string,
+  company: Omit<Company, 'id' | 'user_id' | 'created_at' | 'updated_at'>,
+  options: RequestOptions = {}
+) {
+  const query = supabase
     .from('companies')
     .insert({
       ...company,
       user_id: userId,
       updated_at: new Date().toISOString()
     })
-    .select()
-    .single();
+    .select();
+
+  if (options.signal) {
+    query.abortSignal(options.signal);
+  }
+
+  const { data, error } = await query.single();
   if (error) {
     console.error('[Supabase] Failed to create company:', error.message);
     throw error;
   }
   return data as Company;
+}
+
+export async function createCompanyWithTimeout(
+  userId: string,
+  company: Omit<Company, 'id' | 'user_id' | 'created_at' | 'updated_at'>,
+  timeoutMs = COMPANY_SAVE_TIMEOUT_MS
+) {
+  return withAbortableTimeout(
+    (signal) => createCompany(userId, company, { signal }),
+    timeoutMs,
+    'Saving company details took too long. Please try again.'
+  );
 }
 
 export async function getUserCompanies(userId: string): Promise<Company[]> {
@@ -178,8 +323,13 @@ export async function deleteCompany(id: string) {
   }
 }
 
-export async function updateProfileCompany(userId: string, defaultCompanyId?: string, currentCompanyId?: string) {
-  const { error } = await supabase
+export async function updateProfileCompany(
+  userId: string,
+  defaultCompanyId?: string,
+  currentCompanyId?: string,
+  options: RequestOptions = {}
+) {
+  const query = supabase
     .from('profiles')
     .update({
       default_company_id: defaultCompanyId || null,
@@ -187,22 +337,56 @@ export async function updateProfileCompany(userId: string, defaultCompanyId?: st
       updated_at: new Date().toISOString()
     })
     .eq('id', userId);
+
+  if (options.signal) {
+    query.abortSignal(options.signal);
+  }
+
+  const { error } = await query;
   if (error) {
     console.error('[Supabase] Failed to update profile company:', error.message);
+    throw error;
   }
 }
 
-export async function getCompanyPRDs(companyId: string): Promise<SavedPRD[]> {
-  const { data, error } = await supabase
+export async function updateProfileCompanyWithTimeout(
+  userId: string,
+  defaultCompanyId?: string,
+  currentCompanyId?: string,
+  timeoutMs = PROFILE_SYNC_TIMEOUT_MS
+) {
+  return withAbortableTimeout(
+    (signal) => updateProfileCompany(userId, defaultCompanyId, currentCompanyId, { signal }),
+    timeoutMs,
+    'Updating your company selection took too long.'
+  );
+}
+
+export async function getCompanyPRDs(companyId: string, options: RequestOptions = {}): Promise<SavedPRD[]> {
+  const query = supabase
     .from('prds')
     .select('*')
     .eq('company_id', companyId)
-    .order('created_at', { ascending: false });
+    .order('updated_at', { ascending: false });
+
+  if (options.signal) {
+    query.abortSignal(options.signal);
+  }
+
+  const { data, error } = await query;
   if (error) {
     console.error('[Supabase] Failed to fetch company PRDs:', error.message);
     return [];
   }
   return (data || []) as SavedPRD[];
+}
+
+export async function getCompanyPRDsWithTimeout(companyId: string, timeoutMs = PRD_FETCH_TIMEOUT_MS): Promise<SavedPRD[]> {
+  return withAbortableTimeout(
+    (signal) => getCompanyPRDs(companyId, { signal }),
+    timeoutMs,
+    'Loading PRDs took too long. Please refresh and try again.'
+  );
 }
 
 export async function deletePRD(id: string) {

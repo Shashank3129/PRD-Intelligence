@@ -31,6 +31,8 @@ async function streamAI(
 
 // ---------- Simulate delay for mock ----------
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+const PERSONA_OPENING_TIMEOUT_MS = 12_000;
+const PERSONA_REPLY_TIMEOUT_MS = 15_000;
 
 // ---------- Prompt helpers ----------
 
@@ -442,20 +444,47 @@ export async function generatePersonaMessage(
     }
 
     const PERSONA_MAX_TOKENS = 700;
-    let text: string;
-    if (onStream && hasOpenRouterKey()) {
-      text = await streamAI(msgs, system, 0.75, onStream, PERSONA_MAX_TOKENS);
-    } else {
-      text = await callAI(msgs, system, 0.75, PERSONA_MAX_TOKENS);
+    const PERSONA_TIMEOUT = Symbol('persona-timeout');
+    const timeoutMs = isOpening ? PERSONA_OPENING_TIMEOUT_MS : PERSONA_REPLY_TIMEOUT_MS;
+    let allowStream = true;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+    const requestPromise = (async () => {
+      if (onStream && hasOpenRouterKey()) {
+        return streamAI(
+          msgs,
+          system,
+          0.75,
+          (accumulated) => {
+            if (allowStream) onStream(accumulated);
+          },
+          PERSONA_MAX_TOKENS
+        );
+      }
+      return callAI(msgs, system, 0.75, PERSONA_MAX_TOKENS);
+    })();
+
+    const timeoutPromise = new Promise<symbol>((resolve) => {
+      timeoutId = setTimeout(() => {
+        allowStream = false;
+        resolve(PERSONA_TIMEOUT);
+      }, timeoutMs);
+    });
+
+    const result = await Promise.race<string | symbol>([requestPromise, timeoutPromise]);
+    allowStream = false;
+    if (timeoutId) clearTimeout(timeoutId);
+
+    if (typeof result !== 'string') {
+      return mockPersonaMessage(persona, conversation, isOpening);
     }
-    return { success: true, text };
+
+    return { success: true, text: result };
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown';
     if (msg === 'no-api-key') {
-      await delay(1500);
       return mockPersonaMessage(persona, conversation, isOpening);
     }
-    await delay(400);
     return mockPersonaMessage(persona, conversation, isOpening);
   }
 }
@@ -592,6 +621,7 @@ export interface CompanyProfile {
   businessModel: string;
   competitors: string[];
   size: string;
+  discoveredProducts?: Array<{ name: string; description: string; type: string; status: string }>;
 }
 
 export async function generateCompanyContext(
@@ -608,8 +638,12 @@ JSON shape:
   "targetMarket": "who they sell to",
   "businessModel": "how they make money (e.g. SaaS subscription, freemium)",
   "competitors": ["Competitor A", "Competitor B", "Competitor C"],
-  "size": "one of: 1-10 | 11-50 | 51-200 | 201-1000 | 1000+"
-}`;
+  "size": "one of: 1-10 | 11-50 | 51-200 | 201-1000 | 1000+",
+  "discoveredProducts": [
+    { "name": "Product Name", "description": "one sentence description", "type": "SaaS|API|Platform|Mobile App|Tool|Library", "status": "active|beta|planning" }
+  ]
+}
+For discoveredProducts: list up to 5 known products/services this company offers. If unknown, return an empty array.`;
 
   const userMsg = hint
     ? `Company name: ${name}\nAdditional context: ${hint}`

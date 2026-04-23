@@ -12,6 +12,7 @@ export type Screen =
   | 'export';
 
 export interface User {
+  id?: string;
   name: string;
   email: string;
   avatarUrl?: string | null;
@@ -29,6 +30,21 @@ export interface Company {
   context?: string;
   created_at?: string;
   updated_at?: string;
+}
+
+export interface Product {
+  id: string;
+  companyId: string;
+  name: string;
+  stage: string;
+  description: string;
+  targetUsers: string;
+  businessModel: string;
+  competitors: string;
+  companyGoals: string;
+  createdAt: string;
+  type?: string;
+  status?: string;
 }
 
 export interface ProductContext {

@@ -104,6 +104,7 @@ export function ExportPage() {
     store.setProductCtx(null);
     store.setIdea('');
     store.setPrd('');
+    store.setCurrentPrdId(null);
     store.setPrdVersion(1);
     store.resetPersonaStatuses();
     store.resetDiscussionState();

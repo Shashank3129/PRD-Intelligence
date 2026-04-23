@@ -2,8 +2,7 @@ import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Sparkles, Building2, Edit2, Check } from 'lucide-react';
 import { useAppStore } from '@/hooks/useAppStore';
-import { createCompany, updateProfileCompany } from '@/services/supabase';
-import { supabase } from '@/services/supabase';
+import { createCompanyWithTimeout, resolveCurrentUserId, updateProfileCompanyWithTimeout } from '@/services/supabase';
 import { generateCompanyContext } from '@/services/aiService';
 import type { CompanyProfile } from '@/services/aiService';
 
@@ -55,10 +54,9 @@ export function CompanyOnboardingPage() {
     if (!editedProfile || !user?.email) return;
     setSaving(true);
     try {
-      const { data: { user: authUser } } = await supabase.auth.getUser();
-      if (!authUser?.id) throw new Error('No auth user');
+      const userId = await resolveCurrentUserId(user.id);
 
-      const newCompany = await createCompany(authUser.id, {
+      const newCompany = await createCompanyWithTimeout(userId, {
         name: companyName.trim(),
         industry: editedProfile.industry,
         size: editedProfile.size,
@@ -71,7 +69,9 @@ export function CompanyOnboardingPage() {
         ].join('\n')
       });
 
-      await updateProfileCompany(authUser.id, newCompany.id, newCompany.id);
+      void updateProfileCompanyWithTimeout(userId, newCompany.id, newCompany.id).catch((error) => {
+        console.error('[CompanyOnboardingPage] Failed to sync profile company:', error);
+      });
       addCompany(newCompany);
       setSelectedCompany(newCompany);
       setCompanies([newCompany]);
@@ -79,7 +79,10 @@ export function CompanyOnboardingPage() {
       setScreen('dashboard');
     } catch (err) {
       console.error(err);
-      addToast({ type: 'error', message: 'Failed to save company. Try again.' });
+      addToast({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Failed to save company. Try again.'
+      });
     } finally {
       setSaving(false);
     }

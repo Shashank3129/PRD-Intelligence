@@ -4,6 +4,7 @@ import type {
   Screen,
   User,
   Company,
+  Product,
   ProductContext,
   Persona,
   PersonaStatus,
@@ -32,6 +33,12 @@ interface AppState {
   updateCompany: (company: Company) => void;
   deleteCompany: (companyId: string) => void;
 
+  // Products
+  products: Product[];
+  setProducts: (products: Product[]) => void;
+  addProduct: (product: Product) => void;
+  deleteProduct: (productId: string) => void;
+
   // Product Context
   productCtx: ProductContext | null;
   setProductCtx: (ctx: ProductContext | null) => void;
@@ -43,6 +50,8 @@ interface AppState {
   // PRD
   prd: string;
   setPrd: (prd: string) => void;
+  currentPrdId: string | null;
+  setCurrentPrdId: (prdId: string | null) => void;
   prdVersion: number;
   setPrdVersion: (version: number) => void;
   prdVersions: PRDVersion[];
@@ -80,9 +89,11 @@ const initialState = {
   user: null as User | null,
   companies: [] as Company[],
   selectedCompany: null as Company | null,
+  products: [] as Product[],
   productCtx: null as ProductContext | null,
   idea: '',
   prd: '',
+  currentPrdId: null as string | null,
   prdVersion: 1,
   prdVersions: [] as PRDVersion[],
   selectedPersonas: PERSONAS.filter(p => ['eng', 'design', 'legal', 'ceo'].includes(p.id)),
@@ -124,11 +135,17 @@ export const useAppStore = create<AppState>()(
         selectedCompany: state.selectedCompany?.id === companyId ? null : state.selectedCompany
       })),
 
+      setProducts: (products) => set({ products }),
+      addProduct: (product) => set((state) => ({ products: [...state.products, product] })),
+      deleteProduct: (productId) => set((state) => ({ products: state.products.filter(p => p.id !== productId) })),
+
       setProductCtx: (productCtx) => set({ productCtx }),
 
       setIdea: (idea) => set({ idea }),
       
       setPrd: (prd) => set({ prd }),
+
+      setCurrentPrdId: (currentPrdId) => set({ currentPrdId }),
       
       setPrdVersion: (prdVersion) => set({ prdVersion }),
       
@@ -207,10 +224,13 @@ export const useAppStore = create<AppState>()(
       partialize: (state) => ({
         screen: state.screen,
         user: state.user,
+        companies: state.companies,
         selectedCompany: state.selectedCompany,
+        products: state.products,
         productCtx: state.productCtx,
         idea: state.idea,
         prd: state.prd,
+        currentPrdId: state.currentPrdId,
         prdVersion: state.prdVersion,
         prdVersions: state.prdVersions
       })

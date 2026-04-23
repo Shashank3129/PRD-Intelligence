@@ -122,8 +122,12 @@ export default function ScrollMorphHero() {
     const container = containerRef.current;
     if (!container) return;
     const handleWheel = (e: WheelEvent) => {
+      const current = scrollRef.current;
+      const atTop = current <= 0 && e.deltaY < 0;
+      const atBottom = current >= MAX_SCROLL && e.deltaY > 0;
+      if (atTop || atBottom) return;
       e.preventDefault();
-      const newScroll = Math.min(Math.max(scrollRef.current + e.deltaY, 0), MAX_SCROLL);
+      const newScroll = Math.min(Math.max(current + e.deltaY, 0), MAX_SCROLL);
       scrollRef.current = newScroll;
       virtualScroll.set(newScroll);
     };

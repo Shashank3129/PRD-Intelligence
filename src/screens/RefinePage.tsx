@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useAppStore } from '@/hooks/useAppStore';
 import { UserMenu } from '@/components/UserMenu';
 import { refinePRD } from '@/services/aiService';
+import { resolveCurrentUserId, savePRDWithTimeout, updatePRDWithTimeout } from '@/services/supabase';
 import { ArrowRight, Send, Copy, Check, Menu, X, Bot, User, Download, Sparkles, AlertCircle, PenLine } from 'lucide-react';
 import { CompletenessModal } from './CompletenessModal';
 
@@ -142,12 +143,16 @@ export function RefinePage() {
   const {
     prd,
     setPrd,
+    currentPrdId,
+    setCurrentPrdId,
     prdVersion,
     setPrdVersion,
     productCtx,
     setScreen,
     addPrdVersion,
-    addToast
+    addToast,
+    user,
+    selectedCompany
   } = useAppStore();
 
   const [messages, setMessages] = useState<{ role: 'user' | 'assistant'; content: string }[]>([
@@ -201,13 +206,42 @@ export function RefinePage() {
       setStreamingText(null);
 
       if (result.success && result.text) {
+        const nextVersion = prdVersion + 1;
         setPrd(result.text);
-        setPrdVersion(prdVersion + 1);
+        setPrdVersion(nextVersion);
         addPrdVersion({
-          version: prdVersion + 1,
+          version: nextVersion,
           date: new Date().toISOString(),
           summary: result.changes || 'Refined based on feedback'
         });
+
+        try {
+          if (currentPrdId) {
+            await updatePRDWithTimeout(currentPrdId, {
+              prd_content: result.text,
+              product_name: productCtx.productName,
+              version: nextVersion
+            });
+          } else if (selectedCompany?.id && user?.email) {
+            const userId = await resolveCurrentUserId(user.id);
+            const savedPrd = await savePRDWithTimeout({
+              user_id: userId,
+              company_id: selectedCompany.id,
+              product_name: productCtx.productName,
+              prd_content: result.text,
+              version: nextVersion
+            });
+            setCurrentPrdId(savedPrd.id ?? null);
+          }
+        } catch (saveError) {
+          console.error('[RefinePage] Failed to sync PRD:', saveError);
+          addToast({
+            type: 'warning',
+            message: saveError instanceof Error
+              ? saveError.message
+              : 'PRD was refined, but syncing it to the dashboard failed.'
+          });
+        }
 
         setMessages((prev) => [
           ...prev,
