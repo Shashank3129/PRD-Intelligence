@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect, useCallback, Suspense } from 'react';
-import { motion, useScroll, useTransform, useSpring, useInView, AnimatePresence } from 'framer-motion';
+import { motion, useScroll, useTransform, useSpring, useInView, AnimatePresence, useMotionValue } from 'framer-motion';
 import { useAppStore } from '@/hooks/useAppStore';
 import { Navigation } from '@/components/Navigation';
 import { Card3D } from '@/components/Card3D';
@@ -193,12 +193,16 @@ const staggerContainer = {
 const useMousePosition = () => {
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const [isReady, setIsReady] = useState(false);
+  const rafRef = useRef<number>();
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
-      setPosition({
-        x: (e.clientX / window.innerWidth - 0.5) * 2,
-        y: (e.clientY / window.innerHeight - 0.5) * 2
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = requestAnimationFrame(() => {
+        setPosition({
+          x: (e.clientX / window.innerWidth - 0.5) * 2,
+          y: (e.clientY / window.innerHeight - 0.5) * 2
+        });
       });
     };
     
@@ -423,7 +427,10 @@ const PERSONAS_DATA: PersonaData[] = [
 // 3D CARD COMPONENT
 // ==========================================
 const DemoCard3D = () => {
-  const [rotation, setRotation] = useState({ x: 0, y: 0 });
+  const rx = useMotionValue(0);
+  const ry = useMotionValue(0);
+  const smoothX = useSpring(rx, { stiffness: 150, damping: 20 });
+  const smoothY = useSpring(ry, { stiffness: 150, damping: 20 });
   const [isHovered, setIsHovered] = useState(false);
   const reducedMotion = useReducedMotion();
 
@@ -432,11 +439,13 @@ const DemoCard3D = () => {
     const rect = e.currentTarget.getBoundingClientRect();
     const x = (e.clientY - rect.top - rect.height / 2) / 20;
     const y = (e.clientX - rect.left - rect.width / 2) / 20;
-    setRotation({ x: -x, y: y });
+    rx.set(-x);
+    ry.set(y);
   };
 
   const handleMouseLeave = () => {
-    setRotation({ x: 0, y: 0 });
+    rx.set(0);
+    ry.set(0);
     setIsHovered(false);
   };
 
@@ -454,7 +463,8 @@ const DemoCard3D = () => {
           background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
           borderRadius: '24px',
           transformStyle: 'preserve-3d',
-          transform: `rotateX(${rotation.x}deg) rotateY(${rotation.y}deg)`,
+          rotateX: smoothX,
+          rotateY: smoothY,
           transition: reducedMotion ? 'none' : 'transform 0.1s ease-out',
           boxShadow: isHovered 
             ? '0 25px 50px -12px rgba(102, 126, 234, 0.4), 0 0 0 1px rgba(255,255,255,0.1) inset'
@@ -731,7 +741,10 @@ const StepCardFlow = ({
   const isInView = useInView(ref, { once: true, margin: "-80px" });
   const reducedMotion = useReducedMotion();
   const [isHovered, setIsHovered] = useState(false);
-  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+  const mx = useMotionValue(0);
+  const my = useMotionValue(0);
+  const smoothX = useSpring(mx, { stiffness: 150, damping: 20 });
+  const smoothY = useSpring(my, { stiffness: 150, damping: 20 });
   const [isExpanded, setIsExpanded] = useState(false);
 
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -739,7 +752,8 @@ const StepCardFlow = ({
     const rect = e.currentTarget.getBoundingClientRect();
     const x = (e.clientX - rect.left - rect.width / 2) / 25;
     const y = (e.clientY - rect.top - rect.height / 2) / 25;
-    setMousePos({ x, y });
+    mx.set(x);
+    my.set(y);
   };
 
   return (
@@ -766,7 +780,7 @@ const StepCardFlow = ({
       <motion.div
         onMouseMove={handleMouseMove}
         onMouseEnter={() => setIsHovered(true)}
-        onMouseLeave={() => { setIsHovered(false); setMousePos({ x: 0, y: 0 }); }}
+        onMouseLeave={() => { setIsHovered(false); mx.set(0); my.set(0); }}
         onClick={() => setIsExpanded(!isExpanded)}
         whileHover={reducedMotion ? {} : { scale: 1.02, y: -5 }}
         whileTap={{ scale: 0.98 }}
@@ -776,7 +790,8 @@ const StepCardFlow = ({
           overflow: 'hidden',
           borderColor: step.color + '30',
           background: `linear-gradient(135deg, ${step.bgColor}60 0%, rgba(255,255,255,0.95) 100%)`,
-          transform: `rotateY(${mousePos.y}deg) rotateX(${-mousePos.x}deg)`,
+          rotateX: useTransform(smoothX, v => -v),
+          rotateY: smoothY,
           transition: reducedMotion ? 'none' : 'transform 0.15s ease-out',
           transformStyle: 'preserve-3d',
           cursor: 'pointer',
@@ -1069,7 +1084,10 @@ const PersonaCardEnhanced = ({ persona, index }: { persona: PersonaData; index: 
   const isInView = useInView(ref, { once: true, margin: "-30px" });
   const reducedMotion = useReducedMotion();
   const [isHovered, setIsHovered] = useState(false);
-  const [rotation, setRotation] = useState({ x: 0, y: 0 });
+  const rx = useMotionValue(0);
+  const ry = useMotionValue(0);
+  const smoothX = useSpring(rx, { stiffness: 150, damping: 20 });
+  const smoothY = useSpring(ry, { stiffness: 150, damping: 20 });
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
 
@@ -1077,8 +1095,9 @@ const PersonaCardEnhanced = ({ persona, index }: { persona: PersonaData; index: 
     if (reducedMotion) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const x = (e.clientY - rect.top - rect.height / 2) / 30;
-    const y = (e.clientX - rect.left - rect.width / 2) / 30;
-    setRotation({ x: -x, y: y });
+    const y = (e.clientX - rect.left - rect.width / 30);
+    rx.set(-x);
+    ry.set(y);
   };
 
   const initials = persona.name.split(' ').map(n => n[0]).join('').substring(0, 2);
@@ -1094,14 +1113,15 @@ const PersonaCardEnhanced = ({ persona, index }: { persona: PersonaData; index: 
       <motion.div
         onMouseMove={handleMouseMove}
         onMouseEnter={() => setIsHovered(true)}
-        onMouseLeave={() => { setIsHovered(false); setRotation({ x: 0, y: 0 }); }}
+        onMouseLeave={() => { setIsHovered(false); rx.set(0); ry.set(0); }}
         style={{
           ...S.glassStrong,
           borderRadius: '24px',
           overflow: 'hidden',
           borderColor: persona.borderColor,
           background: `linear-gradient(135deg, rgba(255,255,255,0.95) 0%, ${persona.borderColor.replace('0.3', '0.05')} 100%)`,
-          transform: `rotateY(${rotation.y}deg) rotateX(${rotation.x}deg)`,
+          rotateX: smoothX,
+          rotateY: smoothY,
           transition: reducedMotion ? 'none' : 'transform 0.15s ease-out',
           transformStyle: 'preserve-3d',
           cursor: 'pointer',
@@ -1523,6 +1543,12 @@ export function LandingPage() {
       <div ref={containerRef} style={S.pageBg}>
         {/* GLOBAL STYLES */}
         <style>{`
+          html {
+            scroll-padding-top: 104px;
+          }
+          section[id] {
+            scroll-margin-top: 104px;
+          }
           @keyframes gradient-shift {
             0%, 100% { background-position: 0% 50%; }
             50% { background-position: 100% 50%; }
@@ -1636,7 +1662,7 @@ export function LandingPage() {
           minHeight: '100vh',
           display: 'flex',
           alignItems: 'center',
-          paddingTop: '80px',
+          paddingTop: '104px',
           zIndex: 10,
           overflow: 'hidden',
         }}>
@@ -2178,10 +2204,9 @@ export function LandingPage() {
 
         {/* AI REVIEWERS SECTION */}
         <section id="personas" style={{
-          position: 'relative',
-          zIndex: 10,
-          height: '100vh',
-          overflow: 'hidden',
+          ...S.section,
+          padding: '112px 16px 120px',
+          background: 'linear-gradient(180deg, rgba(255,255,255,0) 0%, rgba(238,242,255,0.45) 22%, rgba(255,255,255,0.96) 100%)',
         }}>
           <ScrollMorphHero />
         </section>
